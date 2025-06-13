@@ -1,0 +1,378 @@
+name: Deploy to Kubernetes
+
+on:
+  workflow_run:
+    workflows: ["Docker Build and Push"]
+    types:
+      - completed
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: true
+        default: 'latest'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: advanced-code-server
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Set up Kubernetes config
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+
+    - name: Set environment variables
+      run: |
+        echo "NAMESPACE=code-server-${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_ENV
+        echo "IMAGE_TAG=${{ github.event.inputs.image_tag || 'latest' }}" >> $GITHUB_ENV
+        echo "FULL_IMAGE=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || 'latest' }}" >> $GITHUB_ENV
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy Redis
+      run: |
+        cat <<EOF | kubectl apply -n ${{ env.NAMESPACE }} -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: redis
+          labels:
+            app: redis
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: redis
+          template:
+            metadata:
+              labels:
+                app: redis
+            spec:
+              containers:
+              - name: redis
+                image: redis:7-alpine
+                ports:
+                - containerPort: 6379
+                command: ["redis-server", "--appendonly", "yes"]
+                volumeMounts:
+                - name: redis-data
+                  mountPath: /data
+              volumes:
+              - name: redis-data
+                persistentVolumeClaim:
+                  claimName: redis-pvc
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: redis
+        spec:
+          selector:
+            app: redis
+          ports:
+          - port: 6379
+            targetPort: 6379
+        ---
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: redis-pvc
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+        EOF
+
+    - name: Deploy PostgreSQL
+      run: |
+        cat <<EOF | kubectl apply -n ${{ env.NAMESPACE }} -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: postgres
+          labels:
+            app: postgres
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: postgres
+          template:
+            metadata:
+              labels:
+                app: postgres
+            spec:
+              containers:
+              - name: postgres
+                image: postgres:15-alpine
+                env:
+                - name: POSTGRES_DB
+                  value: codeserver
+                - name: POSTGRES_USER
+                  value: user
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: password
+                ports:
+                - containerPort: 5432
+                volumeMounts:
+                - name: postgres-data
+                  mountPath: /var/lib/postgresql/data
+              volumes:
+              - name: postgres-data
+                persistentVolumeClaim:
+                  claimName: postgres-pvc
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: postgres
+        spec:
+          selector:
+            app: postgres
+          ports:
+          - port: 5432
+            targetPort: 5432
+        ---
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: postgres-pvc
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+        ---
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: postgres-secret
+        type: Opaque
+        data:
+          password: ${{ secrets.POSTGRES_PASSWORD }}
+        EOF
+
+    - name: Deploy Code Server Application
+      run: |
+        cat <<EOF | kubectl apply -n ${{ env.NAMESPACE }} -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: code-server-app
+          labels:
+            app: code-server-app
+        spec:
+          replicas: 3
+          selector:
+            matchLabels:
+              app: code-server-app
+          template:
+            metadata:
+              labels:
+                app: code-server-app
+            spec:
+              containers:
+              - name: code-server-app
+                image: ${{ env.FULL_IMAGE }}
+                ports:
+                - containerPort: 3000
+                env:
+                - name: NODE_ENV
+                  value: production
+                - name: PORT
+                  value: "3000"
+                - name: DATABASE_URL
+                  value: postgresql://user:$(POSTGRES_PASSWORD)@postgres:5432/codeserver
+                - name: REDIS_HOST
+                  value: redis
+                - name: REDIS_PORT
+                  value: "6379"
+                - name: JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: jwt-secret
+                - name: SESSION_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: session-secret
+                - name: GITHUB_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: oauth-secrets
+                      key: github-client-id
+                - name: GITHUB_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: oauth-secrets
+                      key: github-client-secret
+                - name: GOOGLE_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: oauth-secrets
+                      key: google-client-id
+                - name: GOOGLE_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: oauth-secrets
+                      key: google-client-secret
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: password
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 3000
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 3000
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                resources:
+                  requests:
+                    memory: "512Mi"
+                    cpu: "250m"
+                  limits:
+                    memory: "1Gi"
+                    cpu: "500m"
+                volumeMounts:
+                - name: docker-socket
+                  mountPath: /var/run/docker.sock
+              volumes:
+              - name: docker-socket
+                hostPath:
+                  path: /var/run/docker.sock
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: code-server-app
+        spec:
+          selector:
+            app: code-server-app
+          ports:
+          - port: 80
+            targetPort: 3000
+          type: ClusterIP
+        ---
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: code-server-ingress
+          annotations:
+            kubernetes.io/ingress.class: nginx
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+            nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+            nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+        spec:
+          tls:
+          - hosts:
+            - ${{ secrets.DOMAIN_NAME }}
+            secretName: code-server-tls
+          rules:
+          - host: ${{ secrets.DOMAIN_NAME }}
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: code-server-app
+                    port:
+                      number: 80
+        EOF
+
+    - name: Create application secrets
+      run: |
+        kubectl create secret generic app-secrets \
+          --from-literal=jwt-secret="${{ secrets.JWT_SECRET }}" \
+          --from-literal=session-secret="${{ secrets.SESSION_SECRET }}" \
+          --namespace=${{ env.NAMESPACE }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+        
+        kubectl create secret generic oauth-secrets \
+          --from-literal=github-client-id="${{ secrets.GITHUB_CLIENT_ID }}" \
+          --from-literal=github-client-secret="${{ secrets.GITHUB_CLIENT_SECRET }}" \
+          --from-literal=google-client-id="${{ secrets.GOOGLE_CLIENT_ID }}" \
+          --from-literal=google-client-secret="${{ secrets.GOOGLE_CLIENT_SECRET }}" \
+          --namespace=${{ env.NAMESPACE }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Wait for deployment
+      run: |
+        kubectl rollout status deployment/code-server-app -n ${{ env.NAMESPACE }} --timeout=300s
+
+    - name: Verify deployment
+      run: |
+        kubectl get pods -n ${{ env.NAMESPACE }}
+        kubectl get services -n ${{ env.NAMESPACE }}
+        kubectl get ingress -n ${{ env.NAMESPACE }}
+
+    - name: Run smoke tests
+      run: |
+        # Wait for service to be ready
+        sleep 30
+        
+        # Get the service URL
+        SERVICE_URL="http://$(kubectl get service code-server-app -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.clusterIP}')"
+        
+        # Test health endpoint
+        kubectl run curl-test --image=curlimages/curl:latest --rm -i --restart=Never -- \
+          curl -f "$SERVICE_URL/health" || exit 1
+        
+        echo "✅ Deployment successful!"
+
+    - name: Deployment summary
+      run: |
+        echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment:** ${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image:** ${{ env.FULL_IMAGE }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Namespace:** ${{ env.NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Domain:** ${{ secrets.DOMAIN_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Services Deployed:" >> $GITHUB_STEP_SUMMARY
+        echo "- Code Server Application (3 replicas)" >> $GITHUB_STEP_SUMMARY
+        echo "- PostgreSQL Database" >> $GITHUB_STEP_SUMMARY
+        echo "- Redis Cache" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🎉 Deployment completed successfully!"
