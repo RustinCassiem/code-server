@@ -4,9 +4,11 @@
   "description": "A code server project with authentication and essential features.",
   "main": "src/server.ts",
   "scripts": {
-    "start": "ts-node src/server.ts",
+    "start": "node dist/server.js",
     "build": "tsc",
-    "dev": "ts-node-dev src/server.ts",
+    "dev": "nodemon --exec ts-node src/server.ts",
+    "test": "echo \"Tests not implemented yet\" && exit 0",
+    "lint": "echo \"Linting not configured yet\" && exit 0",
     "docker:build": "docker-compose build",
     "docker:up": "docker-compose up",
     "docker:down": "docker-compose down"
