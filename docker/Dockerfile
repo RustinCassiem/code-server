@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:24-alpine
 
 # Install Docker CLI and other dependencies
 RUN apk add --no-cache docker-cli git curl bash
