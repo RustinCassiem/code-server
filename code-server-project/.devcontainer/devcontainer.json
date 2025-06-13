@@ -1,0 +1,20 @@
+{
+  "name": "Code Server Project",
+  "dockerFile": "Dockerfile",
+  "context": "..",
+  "appPort": [
+    3000
+  ],
+  "extensions": [
+    "ms-azuretools.vscode-docker",
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "ms-vscode.vscode-typescript-tslint-plugin"
+  ],
+  "settings": {
+    "terminal.integrated.shell.linux": "/bin/bash",
+    "typescript.tsdk": "node_modules/typescript/lib"
+  },
+  "postCreateCommand": "npm install",
+  "remoteUser": "node"
+}
