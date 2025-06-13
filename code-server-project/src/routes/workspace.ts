@@ -1,29 +1,32 @@
 import { Router } from 'express';
-import { 
+import {
   createWorkspace,
   getWorkspaces,
   getWorkspace,
   startWorkspace,
   stopWorkspace,
-  getSessions,
   deleteWorkspace
 } from '../controllers/workspaceController';
-import { authenticateToken, requireRole } from '../auth/middleware';
+import { requireRole, validateWorkspaceAccess } from '../auth/middleware';
 
 const router = Router();
 
-// All workspace routes require authentication
-router.use(authenticateToken);
-
-// Workspace management
-router.post('/', createWorkspace);
+// Get all workspaces for current user
 router.get('/', getWorkspaces);
-router.get('/:id', getWorkspace);
-router.delete('/:id', deleteWorkspace);
 
-// Session management
-router.post('/:id/start', startWorkspace);
-router.post('/:id/stop', stopWorkspace);
-router.get('/:id/sessions', getSessions);
+// Create new workspace
+router.post('/', createWorkspace);
+
+// Get specific workspace
+router.get('/:id', validateWorkspaceAccess, getWorkspace);
+
+// Start workspace
+router.post('/:id/start', validateWorkspaceAccess, startWorkspace);
+
+// Stop workspace
+router.post('/:id/stop', validateWorkspaceAccess, stopWorkspace);
+
+// Delete workspace
+router.delete('/:id', validateWorkspaceAccess, deleteWorkspace);
 
 export default router;

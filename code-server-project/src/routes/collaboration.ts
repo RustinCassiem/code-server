@@ -1,29 +1,27 @@
 import { Router } from 'express';
-import CollaborationController from '../controllers/collaborationController';
-import { authenticateToken } from '../auth/middleware';
+import {
+  joinCollaboration,
+  leaveCollaboration,
+  getCollaborationStatus,
+  updateCursor,
+  shareWorkspace
+} from '../controllers/collaborationController';
 
 const router = Router();
 
-// All collaboration routes require authentication
-router.use(authenticateToken);
+// Join collaboration session for workspace
+router.post('/:workspaceId/join', joinCollaboration);
 
-// Note: The CollaborationController instance is created in server.ts
-// These routes will be bound to the controller methods there
-// For now, we'll create placeholder handlers
+// Leave collaboration session
+router.post('/:workspaceId/leave', leaveCollaboration);
 
-router.get('/sessions/:workspaceId', (req, res) => {
-  // This will be replaced with controller method
-  res.json({ message: 'Collaboration session endpoint - to be implemented' });
-});
+// Get collaboration status
+router.get('/:workspaceId/status', getCollaborationStatus);
 
-router.get('/active', (req, res) => {
-  // This will be replaced with controller method
-  res.json({ message: 'Active collaborations endpoint - to be implemented' });
-});
+// Update cursor position
+router.put('/:workspaceId/cursor', updateCursor);
 
-router.post('/invite/:workspaceId', (req, res) => {
-  // This will be replaced with controller method
-  res.json({ message: 'Invite collaborator endpoint - to be implemented' });
-});
+// Share workspace
+router.post('/:workspaceId/share', shareWorkspace);
 
 export default router;

@@ -1,6 +1,37 @@
-# Code Server Project
+# Advanced Code Server
 
-This project is a code server built with TypeScript, designed to provide a robust development environment with authentication features. It utilizes Docker for containerization and includes essential middleware for secure access.
+A feature-rich, secure, and scalable code server platform with VS Code integration, real-time collaboration, and comprehensive administrative tools.
+
+## 🚀 Features
+
+### Core Features
+- **VS Code Integration**: Full VS Code experience in the browser
+- **Multi-language Support**: Node.js, Python, Java, and more
+- **Docker-based Workspaces**: Isolated, containerized development environments
+- **Real-time Collaboration**: Live cursor tracking, shared editing, and user presence
+- **Git Integration**: Built-in Git support with repository cloning
+
+### Security & Authentication
+- **Multi-provider OAuth**: GitHub, Google authentication
+- **JWT-based Sessions**: Secure token-based authentication
+- **Role-based Access Control**: Admin, user, and readonly roles
+- **Rate Limiting**: Protection against abuse and DDoS
+- **Audit Logging**: Comprehensive security and activity logging
+- **Security Headers**: Helmet.js for enhanced security
+
+### Administrative Features
+- **System Monitoring**: Real-time CPU, memory, and disk usage
+- **User Management**: Create, update, and manage users
+- **Workspace Administration**: Monitor and control all workspaces
+- **Audit Logs**: Track all user activities and security events
+- **Health Checks**: Application and service health monitoring
+
+### Infrastructure
+- **High Availability**: Nginx load balancing and reverse proxy
+- **Monitoring Stack**: Prometheus and Grafana integration
+- **Database Support**: PostgreSQL with Redis caching
+- **Container Orchestration**: Docker Compose for easy deployment
+- **Logging**: Structured logging with Winston
 
 ## Features
 

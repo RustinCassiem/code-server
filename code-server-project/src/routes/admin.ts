@@ -1,36 +1,39 @@
 import { Router } from 'express';
-import { authenticateToken, requireRole } from '../auth/middleware';
-import { 
-  getSystemMetrics,
-  getUsers,
+import {
+  getSystemStats,
+  getAllUsers,
   updateUser,
   deleteUser,
   getAuditLogs,
-  getSystemStats,
-  manageContainers
+  getAllWorkspaces,
+  forceStopWorkspace,
+  getSystemLogs,
+  updateSystemSettings
 } from '../controllers/adminController';
+import { requireRole } from '../auth/middleware';
 
 const router = Router();
 
-// All admin routes require authentication and admin role
-router.use(authenticateToken);
+// All admin routes require admin role
 router.use(requireRole(['admin']));
 
 // System monitoring
-router.get('/metrics', getSystemMetrics);
 router.get('/stats', getSystemStats);
+router.get('/logs', getSystemLogs);
 
 // User management
-router.get('/users', getUsers);
+router.get('/users', getAllUsers);
 router.put('/users/:id', updateUser);
 router.delete('/users/:id', deleteUser);
 
 // Audit logs
-router.get('/audit-logs', getAuditLogs);
+router.get('/audit', getAuditLogs);
 
-// Container management
-router.get('/containers', manageContainers);
-router.post('/containers/:id/stop', manageContainers);
-router.delete('/containers/:id', manageContainers);
+// Workspace management
+router.get('/workspaces', getAllWorkspaces);
+router.post('/workspaces/:id/stop', forceStopWorkspace);
+
+// System settings
+router.put('/settings', updateSystemSettings);
 
 export default router;

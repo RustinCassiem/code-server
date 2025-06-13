@@ -1,71 +1,34 @@
 import express from 'express';
 import { createServer } from 'http';
-import { Server as SocketIOServer } from 'socket.io';
-import cors from 'cors';
-import helmet from 'helmet';
-import compression from 'compression';
+import { Server as SocketServer } from 'socket.io';
 import session from 'express-session';
-import Redis from 'ioredis';
-import connectRedis from 'connect-redis';
-import promBundle from 'express-prom-bundle';
-
-import { config, configureDatabase } from './config';
+import passport from 'passport';
+import helmet from 'helmet';
+import cors from 'cors';
+import { config } from './config';
 import { logger } from './utils/logger';
-import { 
-  rateLimitMiddleware, 
-  corsMiddleware, 
-  securityHeaders, 
-  auditMiddleware 
-} from './auth/middleware';
+import { auditLogger } from './utils/auditLogger';
 
-// Import routes
+// Route imports
 import authRoutes from './routes/auth';
 import apiRoutes from './routes/api';
 import workspaceRoutes from './routes/workspace';
 import collaborationRoutes from './routes/collaboration';
 import adminRoutes from './routes/admin';
 
-// Import controllers
-import CollaborationController from './controllers/collaborationController';
+// Middleware imports
+import { authenticateToken, rateLimitMiddleware } from './auth/middleware';
 
 const app = express();
-const server = createServer(app);
-
-// Socket.IO setup
-const io = new SocketIOServer(server, {
+const httpServer = createServer(app);
+const io = new SocketServer(httpServer, {
   cors: {
-    origin: config.security.allowedOrigins,
-    methods: ['GET', 'POST'],
-    credentials: true
+    origin: process.env.CLIENT_URL || "http://localhost:3001",
+    methods: ["GET", "POST"]
   }
 });
 
-// Redis setup for sessions
-const redisClient = new Redis({
-  host: config.redis.host,
-  port: config.redis.port,
-  password: config.redis.password,
-  db: config.redis.db,
-});
-
-const RedisStore = connectRedis(session);
-
-// Prometheus metrics (if enabled)
-if (config.monitoring.enableMetrics) {
-  const metricsMiddleware = promBundle({
-    includeMethod: true,
-    includePath: true,
-    includeStatusCode: true,
-    includeUp: true,
-    customLabels: { project_name: 'advanced-code-server' },
-    promClient: {
-      collectDefaultMetrics: {},
-    },
-  });
-  app.use(metricsMiddleware);
-}
-
-// Basic middleware
+// Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -74,132 +37,91 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'", "ws:", "wss:"],
-      fontSrc: ["'self'"],
-      objectSrc: ["'none'"],
-      mediaSrc: ["'self'"],
-      frameSrc: ["'none'"],
     },
   },
 }));
 
-app.use(compression());
-app.use(corsMiddleware);
-app.use(securityHeaders);
-app.use(express.json({ limit: `${config.security.maxFileSize}mb` }));
-app.use(express.urlencoded({ extended: true, limit: `${config.security.maxFileSize}mb` }));
+app.use(cors({
+  origin: process.env.CLIENT_URL || "http://localhost:3001",
+  credentials: true
+}));
 
-// Session middleware
+// Session configuration
 app.use(session({
-  store: new RedisStore({ client: redisClient }),
   secret: config.auth.sessionSecret,
   resave: false,
   saveUninitialized: false,
   cookie: {
     secure: config.nodeEnv === 'production',
     httpOnly: true,
-    maxAge: config.security.sessionTimeout * 1000,
-    sameSite: 'strict'
-  },
-  name: 'codeserver.sid'
+    maxAge: config.security.sessionTimeout * 1000
+  }
 }));
+
+// Passport middleware
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Body parsing
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Rate limiting
 app.use(rateLimitMiddleware);
 
 // Audit logging
-app.use(auditMiddleware);
+app.use(auditLogger);
+
+// Routes
+app.use('/auth', authRoutes);
+app.use('/api', authenticateToken, apiRoutes);
+app.use('/api/workspaces', authenticateToken, workspaceRoutes);
+app.use('/api/collaboration', authenticateToken, collaborationRoutes);
+app.use('/api/admin', authenticateToken, adminRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
+  res.json({ 
+    status: 'healthy', 
     timestamp: new Date().toISOString(),
-    version: process.env.npm_package_version || '1.0.0',
-    environment: config.nodeEnv
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    version: process.env.npm_package_version || '1.0.0'
   });
 });
 
-// API routes
-app.use('/api/auth', authRoutes);
-app.use('/api', apiRoutes);
-app.use('/api/workspaces', workspaceRoutes);
-app.use('/api/collaboration', collaborationRoutes);
-app.use('/api/admin', adminRoutes);
+// WebSocket handling for real-time collaboration
+io.on('connection', (socket) => {
+  logger.info(`User connected: ${socket.id}`);
+  
+  socket.on('join-workspace', (workspaceId) => {
+    socket.join(workspaceId);
+    socket.to(workspaceId).emit('user-joined', { userId: socket.id });
+  });
 
-// Initialize collaboration controller
-const collaborationController = new CollaborationController(io);
+  socket.on('code-change', (data) => {
+    socket.to(data.workspaceId).emit('code-change', data);
+  });
+
+  socket.on('cursor-position', (data) => {
+    socket.to(data.workspaceId).emit('cursor-position', data);
+  });
+
+  socket.on('disconnect', () => {
+    logger.info(`User disconnected: ${socket.id}`);
+  });
+});
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  logger.error('Unhandled error:', {
-    error: err.message,
-    stack: err.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip
+  logger.error('Unhandled error:', err);
+  res.status(500).json({ 
+    error: config.nodeEnv === 'production' ? 'Internal server error' : err.message 
   });
-
-  res.status(err.status || 500).json({
-    success: false,
-    error: config.nodeEnv === 'production' ? 'Internal server error' : err.message
-  });
-});
-
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Route not found'
-  });
-});
-
-// Database configuration
-configureDatabase();
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    logger.info('Server closed');
-    redisClient.disconnect();
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  logger.info('SIGINT received, shutting down gracefully');
-  server.close(() => {
-    logger.info('Server closed');
-    redisClient.disconnect();
-    process.exit(0);
-  });
-});
-
-// Unhandled promise rejection
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', { promise, reason });
-  process.exit(1);
-});
-
-// Uncaught exception
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', { error: error.message, stack: error.stack });
-  process.exit(1);
 });
 
 // Start the server
-const PORT = config.port;
-server.listen(PORT, () => {
-  logger.info(`Advanced Code Server started on port ${PORT}`, {
-    environment: config.nodeEnv,
-    features: config.features,
-    metricsEnabled: config.monitoring.enableMetrics
-  });
-  console.log(`🚀 Advanced Code Server running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  if (config.monitoring.enableMetrics) {
-    console.log(`📈 Metrics: http://localhost:${PORT}/metrics`);
-  }
+httpServer.listen(config.port, () => {
+  logger.info(`Advanced Code Server running on port ${config.port}`);
+  logger.info(`Environment: ${config.nodeEnv}`);
 });
-
-export default app;
