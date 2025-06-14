@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # CloudDev Server
+  clouddev-server:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - ENVIRONMENT=development
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=clouddev
+      - DB_USER=clouddev
+      - DB_PASSWORD=clouddev123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - STORAGE_PATH=/app/data
+      - ENABLE_SANDBOX=true
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - clouddev-network
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=clouddev
+      - POSTGRES_USER=clouddev
+      - POSTGRES_PASSWORD=clouddev123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - clouddev-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - clouddev-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # Nginx Reverse Proxy (Optional)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - clouddev-server
+    networks:
+      - clouddev-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  clouddev-network:
+    driver: bridge

@@ -1,0 +1,192 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: clouddev
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "clouddev"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: clouddev-secrets
+              key: DB_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: clouddev-secrets
+              key: DB_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - clouddev
+            - -d
+            - clouddev
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - clouddev
+            - -d
+            - clouddev
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-script
+        configMap:
+          name: postgres-init-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: clouddev
+spec:
+  selector:
+    app: postgres
+  ports:
+  - protocol: TCP
+    port: 5432
+    targetPort: 5432
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: clouddev
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: clouddev
+data:
+  01-schema.sql: |
+    -- CloudDev Database Schema
+    -- This file contains the complete database schema for the CloudDev server
+
+    -- Users table
+    CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(255) PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    -- Workspaces table
+    CREATE TABLE IF NOT EXISTS workspaces (
+        id VARCHAR(255) PRIMARY KEY,
+        user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        status VARCHAR(50) NOT NULL DEFAULT 'created',
+        image VARCHAR(255) NOT NULL DEFAULT 'clouddev/workspace:latest',
+        git_url TEXT,
+        git_branch VARCHAR(255) DEFAULT 'main',
+        container_id VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        CONSTRAINT valid_status CHECK (status IN ('created', 'running', 'stopped', 'error'))
+    );
+
+    -- Sessions table for authentication
+    CREATE TABLE IF NOT EXISTS sessions (
+        id VARCHAR(255) PRIMARY KEY,
+        user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        workspace_id VARCHAR(255) REFERENCES workspaces(id) ON DELETE CASCADE,
+        token VARCHAR(255) UNIQUE NOT NULL,
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    -- Files table for workspace files metadata
+    CREATE TABLE IF NOT EXISTS files (
+        id VARCHAR(255) PRIMARY KEY,
+        workspace_id VARCHAR(255) NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        content TEXT,
+        size BIGINT DEFAULT 0,
+        mime_type VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        UNIQUE(workspace_id, path)
+    );
+
+    -- Security events table for audit logging
+    CREATE TABLE IF NOT EXISTS security_events (
+        id VARCHAR(255) PRIMARY KEY,
+        user_id VARCHAR(255) REFERENCES users(id) ON DELETE SET NULL,
+        workspace_id VARCHAR(255) REFERENCES workspaces(id) ON DELETE SET NULL,
+        event_type VARCHAR(100) NOT NULL,
+        severity VARCHAR(20) NOT NULL DEFAULT 'low',
+        message TEXT NOT NULL,
+        client_ip INET,
+        user_agent TEXT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        CONSTRAINT valid_severity CHECK (severity IN ('low', 'medium', 'high', 'critical'))
+    );
+
+    -- Indexes for better performance
+    CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+    CREATE INDEX IF NOT EXISTS idx_files_workspace_id ON files(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_security_events_created_at ON security_events(created_at);
+
+    -- Insert default admin user (password: admin123 - change in production!)
+    INSERT INTO users (id, email, name, password_hash) 
+    VALUES (
+        'admin-' || extract(epoch from now()),
+        'admin@clouddev.local', 
+        'Administrator',
+        '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi'
+    ) ON CONFLICT (email) DO NOTHING;
